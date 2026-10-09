@@ -49,7 +49,7 @@ FUNNEL_STAGES = [
 
 STATUS_INDEX = {sid: i for i, (sid, _) in enumerate(FUNNEL_STAGES)}
 
-# Тупиковые статусы не лежат на пути к оплате: считаем лид дошедшим
+# Тупиковые статусы не лежат на пути к оплате: считаем человека дошедшим
 # до последнего этапа, который гарантированно был пройден.
 STATUS_INDEX[89144338] = STATUS_INDEX[89144334]  # Оплата не прошла → Форма оплаты готова
 STATUS_INDEX[89144342] = STATUS_INDEX[89144318]  # Срок предложения истёк → Получил оффер в боте
@@ -297,9 +297,11 @@ def build_html(leads_raw):
 </div>
 
 <div class="stat-row">
-  <div class="stat"><div class="val" id="statTotal">—</div><div class="lbl">Всего лидов</div></div>
+  <div class="stat"><div class="val" id="statVisitors">—</div><div class="lbl">Посетители</div></div>
+  <div class="stat"><div class="val" id="statLeads">—</div><div class="lbl">Лиды</div><div class="sub">оставили email</div></div>
+  <div class="stat"><div class="val" id="statLeadConv" style="color:var(--orange)">—</div><div class="lbl">Конверсия в лид</div></div>
   <div class="stat"><div class="val" id="statPaid" style="color:var(--green)">—</div><div class="lbl">Оплатили</div></div>
-  <div class="stat"><div class="val" id="statConv" style="color:var(--orange)">—</div><div class="lbl">Конверсия в оплату</div></div>
+  <div class="stat"><div class="val" id="statConv" style="color:var(--orange)">—</div><div class="lbl">Конверсия в оплату</div><div class="sub">из лидов</div></div>
   <div class="stat"><div class="val" id="statRev" style="color:var(--green)">—</div><div class="lbl">Выручка</div></div>
   <div class="stat"><div class="val" id="statAvgCycle" style="color:var(--blue)">—</div><div class="lbl">Средний цикл</div></div>
   <div class="stat"><div class="val" id="statMedCycle" style="color:var(--blue)">—</div><div class="lbl">Медиана цикла</div></div>
@@ -308,8 +310,8 @@ def build_html(leads_raw):
 <p class="section-title">Экономика</p>
 <div class="stat-row">
   <div class="stat"><div class="val" id="ecoSpend" style="color:#ef5350">—</div><div class="lbl">Расход</div><div class="sub" id="ecoSpendRub"></div></div>
-  <div class="stat"><div class="val" id="ecoCpl">—</div><div class="lbl">Стоимость лида</div><div class="sub">посетитель лендинга</div></div>
-  <div class="stat"><div class="val" id="ecoCpe">—</div><div class="lbl">Стоимость email</div><div class="sub">оставил email</div></div>
+  <div class="stat"><div class="val" id="ecoCpl">—</div><div class="lbl">Стоимость лида</div><div class="sub">оставил email</div></div>
+  <div class="stat"><div class="val" id="ecoCpv">—</div><div class="lbl">Стоимость посетителя</div><div class="sub">зашёл на лендинг</div></div>
   <div class="stat"><div class="val" id="ecoCac" style="color:var(--orange)">—</div><div class="lbl">CAC</div><div class="sub" id="ecoCacRub">стоимость оплаты</div></div>
   <div class="stat"><div class="val" id="ecoRomi" style="color:var(--green)">—</div><div class="lbl">ROMI</div><div class="sub">(выручка − расход) / расход</div></div>
 </div>
@@ -317,7 +319,7 @@ def build_html(leads_raw):
 <div class="charts">
 
   <div class="card">
-    <h2>Лиды по дням</h2>
+    <h2>Посетители и лиды по дням</h2>
     <div style="position:relative;height:260px"><canvas id="dailyChart"></canvas></div>
   </div>
 
@@ -327,24 +329,24 @@ def build_html(leads_raw):
   </div>
 
   <div class="card">
-    <h2>Цикл сделки: от регистрации до оплаты</h2>
+    <h2>Цикл сделки: от первого визита до оплаты</h2>
     <div id="cycleStats" style="font-size:13px;color:var(--sub);margin-bottom:10px"></div>
     <div style="position:relative;height:260px"><canvas id="cycleChart"></canvas></div>
   </div>
 
   <div class="card">
-    <h2>Воронка: сколько лидов прошли через каждый этап</h2>
+    <h2>Воронка: сколько человек прошли через каждый этап</h2>
     <div id="contentFilterBar" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px"></div>
     <div style="position:relative;height:480px"><canvas id="funnelChart"></canvas></div>
   </div>
 
   <div class="card">
-    <h2>Распределение по UTM Source</h2>
+    <h2>Посетители по UTM Source</h2>
     <div style="position:relative;height:300px"><canvas id="utmChart"></canvas></div>
   </div>
 
   <div class="card">
-    <h2>Распределение по UTM Term</h2>
+    <h2>Посетители по UTM Term</h2>
     <div style="position:relative;height:300px"><canvas id="termChart"></canvas></div>
   </div>
 
@@ -377,10 +379,14 @@ Chart.defaults.borderColor = '#2a2a2a';
 
 const dailyChart = new Chart(document.getElementById('dailyChart'), {{
   type: 'bar',
-  data: {{ labels: [], datasets: [{{ label: 'Лидов создано', data: [], backgroundColor: C.coral, borderRadius: 4 }}] }},
+  data: {{ labels: [], datasets: [
+    {{ label: 'Посетители', data: [], backgroundColor: C.coral, borderRadius: 4 }},
+    {{ label: 'Лиды',       data: [], backgroundColor: C.blue,  borderRadius: 4 }},
+  ] }},
   options: {{
     responsive: true, maintainAspectRatio: false,
-    plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.parsed.y}} лидов` }} }} }},
+    plugins: {{ legend: {{ display: true, labels: {{ color: '#e8e8e8' }} }},
+      tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.dataset.label}}: ${{ctx.parsed.y}}` }} }} }},
     scales: {{ y: {{ beginAtZero: true, ticks: {{ precision: 0 }}, grid: {{ color: '#2a2a2a' }} }}, x: {{ grid: {{ display: false }} }} }}
   }}
 }});
@@ -422,11 +428,11 @@ const cycleChart = new Chart(document.getElementById('cycleChart'), {{
 
 const funnelChart = new Chart(document.getElementById('funnelChart'), {{
   type: 'bar',
-  data: {{ labels: STAGE_NAMES, datasets: [{{ label: 'Лидов прошло через этап', data: [], backgroundColor: C.coral, borderRadius: 4 }}] }},
+  data: {{ labels: STAGE_NAMES, datasets: [{{ label: 'Прошли через этап', data: [], backgroundColor: C.coral, borderRadius: 4 }}] }},
   options: {{
     indexAxis: 'y', responsive: true, maintainAspectRatio: false,
     plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{
-      label: ctx => ` ${{ctx.parsed.x}} лидов`,
+      label: ctx => ` ${{ctx.parsed.x}} чел.`,
       afterLabel: ctx => {{
         if (activeContent !== '__all__' || !currentSpend.usd || !ctx.parsed.x) return '';
         return ` ${{fmtUsd(currentSpend.usd / ctx.parsed.x)}} за человека на этом этапе`;
@@ -438,20 +444,20 @@ const funnelChart = new Chart(document.getElementById('funnelChart'), {{
 
 const utmChart = new Chart(document.getElementById('utmChart'), {{
   type: 'bar',
-  data: {{ labels: [], datasets: [{{ label: 'Лидов', data: [], backgroundColor: [], borderRadius: 4 }}] }},
+  data: {{ labels: [], datasets: [{{ label: 'Посетителей', data: [], backgroundColor: [], borderRadius: 4 }}] }},
   options: {{
     responsive: true, maintainAspectRatio: false,
-    plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.parsed.y}} лидов` }} }} }},
+    plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.parsed.y}} посетителей` }} }} }},
     scales: {{ y: {{ beginAtZero: true, grid: {{ color: '#2a2a2a' }} }}, x: {{ grid: {{ display: false }} }} }}
   }}
 }});
 
 const termChart = new Chart(document.getElementById('termChart'), {{
   type: 'bar',
-  data: {{ labels: [], datasets: [{{ label: 'Лидов', data: [], backgroundColor: [], borderRadius: 4 }}] }},
+  data: {{ labels: [], datasets: [{{ label: 'Посетителей', data: [], backgroundColor: [], borderRadius: 4 }}] }},
   options: {{
     responsive: true, maintainAspectRatio: false,
-    plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.parsed.y}} лидов` }} }} }},
+    plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.parsed.y}} посетителей` }} }} }},
     scales: {{ y: {{ beginAtZero: true, ticks: {{ precision: 0 }}, grid: {{ color: '#2a2a2a' }} }}, x: {{ grid: {{ display: false }} }} }}
   }}
 }});
@@ -505,15 +511,14 @@ function spendInRange() {{
   return {{ usd, rub }};
 }}
 
-function renderEconomics(leads, paid, rev) {{
+function renderEconomics(visitors, leadCount, paid, rev) {{
   currentSpend = spendInRange();
   const {{ usd, rub }} = currentSpend;
-  const emails = leads.filter(l => l.s >= EMAIL_IDX).length;
   const set = (id, v) => document.getElementById(id).textContent = v;
   set('ecoSpend',    usd ? fmtUsd(usd) : '—');
   set('ecoSpendRub', usd && rub !== null ? `≈ ${{fmtRub(rub)}} по курсу ЦБ` : '');
-  set('ecoCpl',      usd && leads.length ? fmtUsd(usd / leads.length) : '—');
-  set('ecoCpe',      usd && emails ? fmtUsd(usd / emails) : '—');
+  set('ecoCpl',      usd && leadCount ? fmtUsd(usd / leadCount) : '—');
+  set('ecoCpv',      usd && visitors ? fmtUsd(usd / visitors) : '—');
   set('ecoCac',      usd && paid ? fmtUsd(usd / paid) : '—');
   set('ecoCacRub',   usd && paid && rub !== null ? `≈ ${{fmtRub(rub / paid)}}` : 'стоимость оплаты');
   set('ecoRomi',     usd && rub ? ((rev - rub) / rub * 100).toFixed(0) + '%' : '—');
@@ -556,8 +561,12 @@ function render(leads) {{
   const paidLeads = leads.filter(l => l.s >= PAID_IDX);
 
   // Daily chart — все дни в пределах фильтра, включая нулевые
-  const dayMap = {{}};
-  leads.forEach(l => {{ const day = mskDate(l.c); dayMap[day] = (dayMap[day]||0) + 1; }});
+  const dayMap = {{}}, leadDayMap = {{}};
+  leads.forEach(l => {{
+    const day = mskDate(l.c);
+    dayMap[day] = (dayMap[day]||0) + 1;
+    if (l.s >= EMAIL_IDX) leadDayMap[day] = (leadDayMap[day]||0) + 1;
+  }});
   const startDay = mskDate(filterFromTs);
   const endDay   = mskDate(filterToTs);
   const days = [];
@@ -566,6 +575,7 @@ function render(leads) {{
   }}
   dailyChart.data.labels = days.map(d => d.slice(5));
   dailyChart.data.datasets[0].data = days.map(d => dayMap[d] || 0);
+  dailyChart.data.datasets[1].data = days.map(d => leadDayMap[d] || 0);
   dailyChart.update();
 
   // Daily paid chart — по дате перевода в «Оплачено»
@@ -614,15 +624,18 @@ function render(leads) {{
   }})();
 
   // Summary
-  const n    = leads.length;
+  const visitors  = leads.length;
+  const leadCount = leads.filter(l => l.s >= EMAIL_IDX).length;
   const paid = paidLeads.length;
   const rev  = paidLeads.reduce((a, l) => a + (l.p || 0), 0);
-  document.getElementById('statTotal').textContent = n;
-  document.getElementById('statPaid').textContent  = paid;
-  document.getElementById('statConv').textContent  = n ? (paid/n*100).toFixed(1)+'%' : '—';
-  document.getElementById('statRev').textContent   = rev ? rev.toLocaleString('ru-RU') + ' ₽' : '—';
+  document.getElementById('statVisitors').textContent = visitors;
+  document.getElementById('statLeads').textContent    = leadCount;
+  document.getElementById('statLeadConv').textContent = visitors ? (leadCount/visitors*100).toFixed(1)+'%' : '—';
+  document.getElementById('statPaid').textContent     = paid;
+  document.getElementById('statConv').textContent     = leadCount ? (paid/leadCount*100).toFixed(1)+'%' : '—';
+  document.getElementById('statRev').textContent      = rev ? rev.toLocaleString('ru-RU') + ' ₽' : '—';
 
-  renderEconomics(leads, paid, rev);
+  renderEconomics(visitors, leadCount, paid, rev);
 
   renderDistribution(utmChart, leads, l => l.u);
   renderDistribution(termChart, leads, l => l.m);
