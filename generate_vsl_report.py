@@ -11,6 +11,7 @@ import urllib.request
 import json
 import os
 import datetime
+import xml.etree.ElementTree as ET
 
 # ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,13 @@ EXCLUDED_STATUSES = {
     143,       # Закрыто без оплаты
 }
 
+# Индекс этапа «Оставил email» — для метрики «стоимость email»
+EMAIL_IDX = STATUS_INDEX[89144282]
+
+# Расходы вносятся вручную: {"date": "YYYY-MM-DD", ...} за день
+# или {"from": ..., "to": ...} за период (распределяется по дням поровну).
+COSTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "costs.json")
+
 # ── AMO helpers ────────────────────────────────────────────────────────────────
 
 def amo_get(path, params=None):
@@ -91,6 +99,48 @@ def fetch_all_leads():
             break
         page += 1
     return leads
+
+
+_usd_rate_cache = {}
+
+def cbr_usd_rate(day):
+    """Курс USD ЦБ РФ на дату (ЦБ сам отдаёт последний действующий курс для выходных)."""
+    if day in _usd_rate_cache:
+        return _usd_rate_cache[day]
+    rate = None
+    try:
+        url = f"https://www.cbr.ru/scripts/XML_daily.asp?date_req={day.strftime('%d/%m/%Y')}"
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            root = ET.fromstring(resp.read())
+        for v in root.findall("Valute"):
+            if v.findtext("CharCode") == "USD":
+                rate = float(v.findtext("Value").replace(",", ".")) / int(v.findtext("Nominal"))
+                break
+    except Exception as e:
+        print(f"  CBR rate for {day} unavailable: {e}")
+    _usd_rate_cache[day] = rate
+    return rate
+
+
+def load_daily_costs():
+    """{'YYYY-MM-DD': {source: {'usd': x, 'rub': y|None}}}"""
+    if not os.path.exists(COSTS_FILE):
+        return {}
+    with open(COSTS_FILE, encoding="utf-8") as f:
+        entries = json.load(f)
+    daily = {}
+    for e in entries:
+        start = datetime.date.fromisoformat(e.get("date") or e["from"])
+        end   = datetime.date.fromisoformat(e.get("date") or e["to"])
+        n_days = (end - start).days + 1
+        per_day = float(e["usd"]) / n_days
+        for i in range(n_days):
+            day = start + datetime.timedelta(days=i)
+            slot = daily.setdefault(day.isoformat(), {}).setdefault(e["source"], {"usd": 0.0, "rub": 0.0})
+            slot["usd"] += per_day
+            rate = cbr_usd_rate(day)
+            slot["rub"] = None if rate is None or slot["rub"] is None else slot["rub"] + per_day * rate
+    return daily
 
 
 def get_custom_field(lead, field_id):
@@ -135,6 +185,7 @@ def build_html(leads_raw):
     records = [r for r in (build_lead_record(l) for l in leads_raw) if r]
     leads_json  = json.dumps(records, ensure_ascii=False, separators=(",", ":"))
     stages_json = json.dumps([name for _, name in FUNNEL_STAGES], ensure_ascii=False)
+    costs_json  = json.dumps(load_daily_costs(), ensure_ascii=False, separators=(",", ":"))
 
     return f"""<!DOCTYPE html>
 <html lang="ru">
@@ -204,6 +255,11 @@ def build_html(leads_raw):
   }}
   .stat .val {{ font-size: 2rem; font-weight: 700; color: var(--accent); }}
   .stat .lbl {{ font-size: .8rem; color: var(--sub); margin-top: 4px; }}
+  .stat .sub {{ font-size: .75rem; color: var(--sub); margin-top: 2px; }}
+  .section-title {{
+    text-align: center; color: var(--sub); font-size: .8rem;
+    text-transform: uppercase; letter-spacing: .06em; margin: -16px 0 12px;
+  }}
 
   /* ── Cards & charts ── */
   .charts {{ display: flex; flex-direction: column; gap: 28px; max-width: 1000px; margin: 0 auto; }}
@@ -249,6 +305,15 @@ def build_html(leads_raw):
   <div class="stat"><div class="val" id="statMedCycle" style="color:var(--blue)">—</div><div class="lbl">Медиана цикла</div></div>
 </div>
 
+<p class="section-title">Экономика</p>
+<div class="stat-row">
+  <div class="stat"><div class="val" id="ecoSpend" style="color:#ef5350">—</div><div class="lbl">Расход</div><div class="sub" id="ecoSpendRub"></div></div>
+  <div class="stat"><div class="val" id="ecoCpl">—</div><div class="lbl">Стоимость лида</div><div class="sub">посетитель лендинга</div></div>
+  <div class="stat"><div class="val" id="ecoCpe">—</div><div class="lbl">Стоимость email</div><div class="sub">оставил email</div></div>
+  <div class="stat"><div class="val" id="ecoCac" style="color:var(--orange)">—</div><div class="lbl">CAC</div><div class="sub" id="ecoCacRub">стоимость оплаты</div></div>
+  <div class="stat"><div class="val" id="ecoRomi" style="color:var(--green)">—</div><div class="lbl">ROMI</div><div class="sub">(выручка − расход) / расход</div></div>
+</div>
+
 <div class="charts">
 
   <div class="card">
@@ -292,6 +357,8 @@ const ALL_LEADS   = {leads_json};
 const STAGE_NAMES = {stages_json};
 const DATA_FROM   = {CREATED_FROM};
 const PAID_IDX    = {PAID_IDX};
+const EMAIL_IDX   = {EMAIL_IDX};
+const DAILY_COSTS = {costs_json};
 
 const C = {{
   teal:   'rgba(0,188,212,0.85)',  green:  'rgba(76,175,80,0.85)',
@@ -358,7 +425,13 @@ const funnelChart = new Chart(document.getElementById('funnelChart'), {{
   data: {{ labels: STAGE_NAMES, datasets: [{{ label: 'Лидов прошло через этап', data: [], backgroundColor: C.coral, borderRadius: 4 }}] }},
   options: {{
     indexAxis: 'y', responsive: true, maintainAspectRatio: false,
-    plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{ label: ctx => ` ${{ctx.parsed.x}} лидов` }} }} }},
+    plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{
+      label: ctx => ` ${{ctx.parsed.x}} лидов`,
+      afterLabel: ctx => {{
+        if (activeContent !== '__all__' || !currentSpend.usd || !ctx.parsed.x) return '';
+        return ` ${{fmtUsd(currentSpend.usd / ctx.parsed.x)}} за человека на этом этапе`;
+      }},
+    }} }} }},
     scales: {{ x: {{ beginAtZero: true, grid: {{ color: '#2a2a2a' }} }}, y: {{ grid: {{ display: false }} }} }}
   }}
 }});
@@ -389,6 +462,7 @@ let activeContent     = '__all__';
 let activeGlobalSrc   = '__all__';
 let filterFromTs      = DATA_FROM;
 let filterToTs        = Math.floor(Date.now()/1000);
+let currentSpend      = {{ usd: 0, rub: 0 }};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function toMidnightTs(dateStr) {{
@@ -408,6 +482,41 @@ function mskDate(ts) {{
 }}
 function paidTs(l) {{
   return l.d > 0 ? l.d : l.ua;
+}}
+function fmtUsd(v) {{
+  return '$' + v.toLocaleString('en-US', {{ minimumFractionDigits: 2, maximumFractionDigits: 2 }});
+}}
+function fmtRub(v) {{
+  return Math.round(v).toLocaleString('ru-RU') + ' ₽';
+}}
+
+// Расход за выбранный период и источник. rub = null, если курс ЦБ хотя бы на один день не получен.
+function spendInRange() {{
+  const fromDay = mskDate(filterFromTs), toDay = mskDate(filterToTs);
+  let usd = 0, rub = 0;
+  Object.entries(DAILY_COSTS).forEach(([day, bySrc]) => {{
+    if (day < fromDay || day > toDay) return;
+    Object.entries(bySrc).forEach(([src, c]) => {{
+      if (activeGlobalSrc !== '__all__' && src !== activeGlobalSrc) return;
+      usd += c.usd;
+      rub = (rub === null || c.rub === null) ? null : rub + c.rub;
+    }});
+  }});
+  return {{ usd, rub }};
+}}
+
+function renderEconomics(leads, paid, rev) {{
+  currentSpend = spendInRange();
+  const {{ usd, rub }} = currentSpend;
+  const emails = leads.filter(l => l.s >= EMAIL_IDX).length;
+  const set = (id, v) => document.getElementById(id).textContent = v;
+  set('ecoSpend',    usd ? fmtUsd(usd) : '—');
+  set('ecoSpendRub', usd && rub !== null ? `≈ ${{fmtRub(rub)}} по курсу ЦБ` : '');
+  set('ecoCpl',      usd && leads.length ? fmtUsd(usd / leads.length) : '—');
+  set('ecoCpe',      usd && emails ? fmtUsd(usd / emails) : '—');
+  set('ecoCac',      usd && paid ? fmtUsd(usd / paid) : '—');
+  set('ecoCacRub',   usd && paid && rub !== null ? `≈ ${{fmtRub(rub / paid)}}` : 'стоимость оплаты');
+  set('ecoRomi',     usd && rub ? ((rev - rub) / rub * 100).toFixed(0) + '%' : '—');
 }}
 
 // ── Filter buttons builder ────────────────────────────────────────────────────
@@ -512,6 +621,8 @@ function render(leads) {{
   document.getElementById('statPaid').textContent  = paid;
   document.getElementById('statConv').textContent  = n ? (paid/n*100).toFixed(1)+'%' : '—';
   document.getElementById('statRev').textContent   = rev ? rev.toLocaleString('ru-RU') + ' ₽' : '—';
+
+  renderEconomics(leads, paid, rev);
 
   renderDistribution(utmChart, leads, l => l.u);
   renderDistribution(termChart, leads, l => l.m);
