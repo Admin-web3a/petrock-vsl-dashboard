@@ -54,11 +54,11 @@ STATUS_INDEX = {sid: i for i, (sid, _) in enumerate(FUNNEL_STAGES)}
 STATUS_INDEX[89144338] = STATUS_INDEX[89144334]  # Оплата не прошла → Форма оплаты готова
 STATUS_INDEX[89144342] = STATUS_INDEX[89144318]  # Срок предложения истёк → Получил оффер в боте
 
+STATUS_INDEX[143] = STATUS_INDEX[89144274]  # Закрыто без оплаты → посетитель
 PAID_IDX = STATUS_INDEX[142]
 
 EXCLUDED_STATUSES = {
     89144270,  # Неразобранное
-    143,       # Закрыто без оплаты
 }
 
 # Индекс этапа «Оставил email» — для метрики «стоимость email»
