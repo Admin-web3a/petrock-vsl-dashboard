@@ -426,11 +426,36 @@ const cycleChart = new Chart(document.getElementById('cycleChart'), {{
   }}
 }});
 
+function fmtStepConv(cur, prev) {{
+  if (!prev || !cur) return '';
+  const pct = cur / prev * 100;
+  return (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + '%';
+}}
+
+const stepConvLabels = {{
+  id: 'stepConvLabels',
+  afterDatasetsDraw(chart) {{
+    const data = chart.data.datasets[0].data;
+    const {{ ctx }} = chart;
+    ctx.save();
+    ctx.font = '12px -apple-system, BlinkMacSystemFont, sans-serif';
+    ctx.fillStyle = '#bbb';
+    ctx.textBaseline = 'middle';
+    chart.getDatasetMeta(0).data.forEach((bar, i) => {{
+      const text = i > 0 ? fmtStepConv(data[i], data[i - 1]) : '';
+      if (text) ctx.fillText(text, bar.x + 6, bar.y);
+    }});
+    ctx.restore();
+  }}
+}};
+
 const funnelChart = new Chart(document.getElementById('funnelChart'), {{
   type: 'bar',
   data: {{ labels: STAGE_NAMES, datasets: [{{ label: 'Прошли через этап', data: [], backgroundColor: C.coral, borderRadius: 4 }}] }},
+  plugins: [stepConvLabels],
   options: {{
     indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+    layout: {{ padding: {{ right: 40 }} }},
     plugins: {{ legend: {{ display: false }}, tooltip: {{ callbacks: {{
       label: ctx => ` ${{ctx.parsed.x}} чел.`,
       afterLabel: ctx => {{
