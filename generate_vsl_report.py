@@ -48,13 +48,14 @@ FUNNEL_STAGES = [
 ]
 
 STATUS_INDEX = {sid: i for i, (sid, _) in enumerate(FUNNEL_STAGES)}
-
-# Тупиковые статусы не лежат на пути к оплате: считаем человека дошедшим
-# до последнего этапа, который гарантированно был пройден.
 STATUS_INDEX[89144338] = STATUS_INDEX[89144334]  # Оплата не прошла → Форма оплаты готова
-STATUS_INDEX[89144342] = STATUS_INDEX[89144318]  # Срок предложения истёк → Получил оффер в боте
 
-STATUS_INDEX[143] = STATUS_INDEX[89144274]  # Закрыто без оплаты → посетитель
+# Тупиковые статусы, куда сделка попадает с разных этапов. Реально пройденный
+# этап берётся из истории статусов; здесь — минимум, если истории нет.
+DEAD_END_FLOOR = {
+    89144342: STATUS_INDEX[89144290],  # Срок предложения истёк (24 ч после старта бота)
+    143:      STATUS_INDEX[89144274],  # Закрыто без оплаты
+}
 PAID_IDX = STATUS_INDEX[142]
 
 EXCLUDED_STATUSES = {
@@ -99,6 +100,31 @@ def fetch_all_leads():
             break
         page += 1
     return leads
+
+
+def fetch_max_stage_from_history(lead_ids):
+    """{lead_id: максимальный индекс этапа воронки по истории смены статусов}"""
+    max_stage = {}
+    ids = list(lead_ids)
+    for i in range(0, len(ids), 10):  # API принимает до 10 entity_id за запрос
+        page = 1
+        while True:
+            params = [("filter[type]", "lead_status_changed"), ("filter[entity]", "lead"),
+                      ("limit", 100), ("page", page)]
+            params += [("filter[entity_id][]", lid) for lid in ids[i:i + 10]]
+            data = amo_get("/api/v4/events", params)
+            events = (data.get("_embedded") or {}).get("events", [])
+            for e in events:
+                for val in (e.get("value_before") or []) + (e.get("value_after") or []):
+                    st = val.get("lead_status") or {}
+                    idx = STATUS_INDEX.get(st.get("id"))
+                    if st.get("pipeline_id") == PIPELINE_ID and idx is not None:
+                        lid = e["entity_id"]
+                        max_stage[lid] = max(max_stage.get(lid, 0), idx)
+            if len(events) < 100:
+                break
+            page += 1
+    return max_stage
 
 
 _usd_rate_cache = {}
@@ -158,12 +184,14 @@ def is_test_lead(lead):
     return (get_custom_field(lead, UTM_SOURCE_FIELD_ID) or "").lower() == "test"
 
 
-def build_lead_record(lead):
+def build_lead_record(lead, history_max):
     if lead.get("status_id") in EXCLUDED_STATUSES or is_test_lead(lead):
         return None
-    status_idx = STATUS_INDEX.get(lead.get("status_id"))
+    status_idx = STATUS_INDEX.get(lead.get("status_id"), DEAD_END_FLOOR.get(lead.get("status_id")))
     if status_idx is None:
         return None
+    if status_idx != PAID_IDX:
+        status_idx = min(max(status_idx, history_max.get(lead["id"], 0)), PAID_IDX - 1)
     return {
         "c":  lead.get("created_at", 0),                              # created_at unix ts
         "s":  status_idx,                                              # funnel stage index
@@ -178,11 +206,11 @@ def build_lead_record(lead):
 
 # ── HTML generation ────────────────────────────────────────────────────────────
 
-def build_html(leads_raw):
+def build_html(leads_raw, history_max):
     updated_str = (datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=3)))
                    .strftime("%d.%m.%Y %H:%M МСК"))
 
-    records = [r for r in (build_lead_record(l) for l in leads_raw) if r]
+    records = [r for r in (build_lead_record(l, history_max) for l in leads_raw) if r]
     leads_json  = json.dumps(records, ensure_ascii=False, separators=(",", ":"))
     stages_json = json.dumps([name for _, name in FUNNEL_STAGES], ensure_ascii=False)
     costs_json  = json.dumps(load_daily_costs(), ensure_ascii=False, separators=(",", ":"))
@@ -764,9 +792,11 @@ if __name__ == "__main__":
     print("Fetching leads from AMO…")
     leads = fetch_all_leads()
     print(f"  Total fetched: {len(leads)}")
+    history_max = fetch_max_stage_from_history(l["id"] for l in leads)
+    print(f"  Status history: {len(history_max)} leads")
 
     os.makedirs("docs", exist_ok=True)
-    html = build_html(leads)
+    html = build_html(leads, history_max)
     with open("docs/index.html", "w", encoding="utf-8") as f:
         f.write(html)
     print(f"  Saved docs/index.html ({len(html):,} bytes)")
